@@ -28,7 +28,7 @@ import json
 from solver import solve
 
 
-PORT = int(os.environ.get("SOLVER_PORT", os.environ.get("PORT", 8191)))
+PORT = int(os.environ.get("SOLVER_PORT", 8191))
 # How many Chrome instances to run in parallel (~500 MB RAM each).
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", 2))
 

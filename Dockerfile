@@ -39,6 +39,7 @@ ENV NODE_ENV=production \
     ORIGIN_HOST=pawainusantara.vercel.app \
     DISPLAY=:99 \
     MAX_WORKERS=1 \
+    SOLVER_PORT=8191 \
     PORT=8080
 
 WORKDIR /app
