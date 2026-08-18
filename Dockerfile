@@ -40,6 +40,7 @@ ENV NODE_ENV=production \
     DISPLAY=:99 \
     MAX_WORKERS=1 \
     SOLVER_PORT=8191 \
+    SOLVER_HOSTMAP=1 \
     PORT=8080
 
 WORKDIR /app

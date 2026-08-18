@@ -26,6 +26,8 @@ USE AT YOUR OWN RISK — only against sites you own or are authorised to automat
 """
 import nodriver as uc
 
+from proxyauth import proxy_chrome_arg
+
 ORIGIN_HOST = os.environ.get("ORIGIN_HOST", "pawainusantara.vercel.app")
 SOLVER_PROXY = os.environ.get("SOLVER_PROXY", "").strip()
 USE_HOSTMAP = os.environ.get("SOLVER_HOSTMAP", "0") == "1"
@@ -103,10 +105,12 @@ def _browser_args() -> list:
         "--lang=en-US,en",
     ]
     if SOLVER_PROXY:
-        args.append(f"--proxy-server={SOLVER_PROXY}")
-        # When proxied, the locally-mapped origin host must go direct.
-        if USE_HOSTMAP:
-            args.append(f"--proxy-bypass-list={ORIGIN_HOST};127.0.0.1;localhost")
+        proxy_arg = proxy_chrome_arg(SOLVER_PROXY)
+        if proxy_arg:
+            args.append(proxy_arg)
+            # When proxied, the locally-mapped origin host must go direct.
+            if USE_HOSTMAP:
+                args.append(f"--proxy-bypass-list={ORIGIN_HOST};127.0.0.1;localhost")
     if USE_HOSTMAP:
         args.append(f"--host-resolver-rules=MAP {ORIGIN_HOST} 127.0.0.1:{HOSTMAP_PORT}")
         args.append("--ignore-certificate-errors")

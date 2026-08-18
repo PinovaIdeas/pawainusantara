@@ -502,7 +502,8 @@ app.listen(PORT, () => {
   init().catch(() => {});
   if (SOLVER_ENABLED) {
     console.log(`[turnstile] solver enabled -> ${SOLVER_URL} (buffer ${TOKEN_BUFFER_TARGET})`);
-    refillTokens().catch(() => {});
+    // Beri jeda agar service solver (Python) selesai listen dulu.
+    setTimeout(() => refillTokens().catch(() => {}), 10000);
     setInterval(() => refillTokens().catch(() => {}), 15000);
   } else {
     console.log("[turnstile] solver disabled (TURNSTILE_SOLVER_ENABLED=0)");

@@ -55,10 +55,15 @@ bisa dipakai. Penanganannya:
 
 > **Penting — IP tepercaya.** Turnstile menilai reputasi IP + fingerprint browser.
 > Dari IP **datacenter** (Railway/VPS) tanpa GPU, Cloudflare menahan token untuk
-> widget invisible ini. Agar token benar-benar terbit, set **proxy residensial**
-> lewat `SOLVER_PROXY` (mis. `http://user:pass@host:port`). Tanpa itu, perbaikan
-> UI (poin 1) tetap jalan, tapi submit vote bisa ditolak origin karena token kosong.
-> Solver bisa dimatikan total dengan `TURNSTILE_SOLVER_ENABLED=0`.
+> widget invisible ini. **Terbukti bekerja** dengan **proxy residensial** (mis. IP
+> Indonesia) via `SOLVER_PROXY` + `SOLVER_HOSTMAP=1` (default): halaman origin
+> disajikan lokal (lewat checkpoint) sementara trafik challenge Turnstile keluar
+> lewat IP residensial → token terbit.
+>
+> **Set kredensial proxy di Environment Variables Railway, JANGAN di kode**
+> (repo publik). Format `SOLVER_PROXY` yang didukung:
+> `host:port:user:pass` atau `http://user:pass@host:port`.
+> Matikan solver total dengan `TURNSTILE_SOLVER_ENABLED=0` (perbaikan UI tetap jalan).
 
 ## Deploy ke Railway
 
@@ -82,14 +87,14 @@ bisa dipakai. Penanganannya:
 | `REQ_TIMEOUT_MS` | `45000` | Batas waktu tiap request ke origin |
 | `BROWSER_UA` | Chrome desktop | User-Agent browser headless |
 | `TURNSTILE_SOLVER_ENABLED` | `1` | `0` untuk mematikan solver (UI tetap diperbaiki) |
-| `SOLVER_PROXY` | _(kosong)_ | Proxy residensial untuk browser solver — wajib agar token terbit |
+| `SOLVER_PROXY` | _(kosong)_ | Proxy residensial — **wajib** agar token terbit. Set di env Railway (bukan di kode). Format `host:port:user:pass` atau URL |
 | `SOLVER_URL` | `http://127.0.0.1:8191` | Alamat service EzSolver |
 | `SOLVER_SITEURL` | `<origin>/mobil-17` | Halaman origin tempat token disolve |
 | `SOLVER_ACTION` | `vote` | Nilai `action` widget Turnstile |
 | `TURNSTILE_SITEKEY` | `0x4AAAAAAEQG3hb7XG-CUqRR` | Sitekey awal (auto-update dari bootstrap) |
 | `TOKEN_BUFFER_TARGET` | `3` | Jumlah token pra-solve yang disimpan |
 | `MAX_WORKERS` | `1` | Chrome solver paralel (`~500 MB` RAM masing-masing) |
-| `SOLVER_HOSTMAP` | `0` | `1` = bypass checkpoint via host-map (mode tanpa proxy) |
+| `SOLVER_HOSTMAP` | `1` | Bypass Vercel checkpoint via host-map (dipakai bersama proxy) |
 
 ## Jalankan lokal (opsional)
 
