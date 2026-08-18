@@ -84,6 +84,30 @@ const STRIP_RES_HEADERS = new Set([
   "set-cookie",
 ]);
 
+// ==== TURNSTILE / SOLVER (EzSolver) ====
+// Origin memasang Cloudflare Turnstile (domain-locked) di halaman voting.
+// Di domain mirror widget-nya gagal ("Halaman belum siap"). Solusi:
+//   1. Null-kan `turnstileSiteKey` di respons /api/voting/bootstrap -> klien
+//      berhenti mewajibkan Turnstile, form bisa dipakai.
+//   2. Suntik token Turnstile asli (disolve EzSolver terhadap domain origin)
+//      ke body POST /api/votes sebelum diteruskan ke origin.
+const SOLVER_ENABLED = process.env.TURNSTILE_SOLVER_ENABLED !== "0";
+const SOLVER_URL = process.env.SOLVER_URL || "http://127.0.0.1:8191";
+const SOLVER_SITEURL = process.env.SOLVER_SITEURL || `${ORIGIN}/mobil-17`;
+const SOLVER_ACTION = process.env.SOLVER_ACTION || "vote";
+const SOLVER_TIMEOUT_S = Number(process.env.SOLVER_TIMEOUT_S || 60);
+const TOKEN_BUFFER_TARGET = Number(process.env.TOKEN_BUFFER_TARGET || 3);
+const TOKEN_TTL_MS = Number(process.env.TOKEN_TTL_MS || 240000); // < 5 mnt (batas CF)
+const VOTE_WAIT_MS = Number(process.env.VOTE_WAIT_MS || 8000);
+const VOTE_PATHS = (process.env.VOTE_PATHS || "/api/votes")
+  .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+const BOOTSTRAP_PATHS = (process.env.BOOTSTRAP_PATHS || "/api/voting/bootstrap")
+  .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+const TURNSTILE_TOKEN_FIELD = process.env.TURNSTILE_TOKEN_FIELD || "turnstileToken";
+const TURNSTILE_SITEKEY_FIELD = process.env.TURNSTILE_SITEKEY_FIELD || "turnstileSiteKey";
+let discoveredSiteKey =
+  process.env.TURNSTILE_SITEKEY || "0x4AAAAAAEQG3hb7XG-CUqRR";
+
 // ---------------------------------------------------------------------------
 // BROWSER MANAGER
 // ---------------------------------------------------------------------------
@@ -231,6 +255,120 @@ function isChallengeResult(result) {
 }
 
 // ---------------------------------------------------------------------------
+// TURNSTILE TOKEN BUFFER (pre-solved via EzSolver service)
+// ---------------------------------------------------------------------------
+const tokenBuffer = []; // { token, exp }
+let refilling = false;
+let nextRefillAt = 0;
+const REFILL_BACKOFF_MS = Number(process.env.REFILL_BACKOFF_MS || 60000);
+
+async function solveOneToken() {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), (SOLVER_TIMEOUT_S + 10) * 1000);
+  try {
+    const r = await fetch(`${SOLVER_URL}/solve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sitekey: discoveredSiteKey,
+        siteurl: SOLVER_SITEURL,
+        action: SOLVER_ACTION,
+        timeout: SOLVER_TIMEOUT_S,
+      }),
+      signal: ctrl.signal,
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.token) throw new Error(data.error || `solver HTTP ${r.status}`);
+    return data.token;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function pruneTokens() {
+  const now = Date.now();
+  for (let i = tokenBuffer.length - 1; i >= 0; i--) {
+    if (tokenBuffer[i].exp <= now) tokenBuffer.splice(i, 1);
+  }
+}
+
+async function refillTokens() {
+  if (!SOLVER_ENABLED || refilling) return;
+  if (Date.now() < nextRefillAt) return;
+  refilling = true;
+  try {
+    pruneTokens();
+    while (tokenBuffer.length < TOKEN_BUFFER_TARGET) {
+      const token = await solveOneToken();
+      tokenBuffer.push({ token, exp: Date.now() + TOKEN_TTL_MS });
+      console.log(`[turnstile] token buffered (${tokenBuffer.length}/${TOKEN_BUFFER_TARGET})`);
+    }
+  } catch (e) {
+    nextRefillAt = Date.now() + REFILL_BACKOFF_MS;
+    console.warn("[turnstile] refill failed, backing off:", e.message);
+  } finally {
+    refilling = false;
+  }
+}
+
+// Ambil satu token (sekali pakai). Tunggu sampai `waitMs` bila buffer kosong.
+async function takeToken(waitMs = 0) {
+  pruneTokens();
+  if (tokenBuffer.length) {
+    const t = tokenBuffer.shift();
+    refillTokens().catch(() => {});
+    return t.token;
+  }
+  refillTokens().catch(() => {});
+  // Jangan menunggu bila sedang backoff (solve pasti gagal) — hindari delay sia-sia.
+  if (Date.now() < nextRefillAt) return null;
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 500));
+    pruneTokens();
+    if (tokenBuffer.length) return tokenBuffer.shift().token;
+  }
+  return null;
+}
+
+// Suntik token Turnstile ke body POST /api/votes.
+async function injectVoteToken(rawBody) {
+  let obj;
+  try {
+    obj = JSON.parse(rawBody.toString("utf8"));
+  } catch {
+    return rawBody;
+  }
+  if (!obj || typeof obj !== "object") return rawBody;
+  const token = await takeToken(SOLVER_ENABLED ? VOTE_WAIT_MS : 0);
+  if (token) {
+    obj[TURNSTILE_TOKEN_FIELD] = token;
+    console.log("[turnstile] injected token into vote submission");
+  } else {
+    console.warn("[turnstile] no token available for vote submission");
+  }
+  return Buffer.from(JSON.stringify(obj), "utf8");
+}
+
+// Null-kan sitekey di respons bootstrap (klien berhenti mewajibkan Turnstile)
+// sekaligus catat sitekey asli untuk dipakai solver.
+function rewriteBootstrap(bodyBuf) {
+  try {
+    const obj = JSON.parse(bodyBuf.toString("utf8"));
+    if (obj && typeof obj === "object") {
+      const sk = obj[TURNSTILE_SITEKEY_FIELD];
+      if (sk && sk !== discoveredSiteKey) {
+        discoveredSiteKey = sk;
+        console.log("[turnstile] discovered sitekey:", discoveredSiteKey);
+      }
+      obj[TURNSTILE_SITEKEY_FIELD] = null;
+      return Buffer.from(JSON.stringify(obj), "utf8");
+    }
+  } catch {}
+  return bodyBuf;
+}
+
+// ---------------------------------------------------------------------------
 // UTIL
 // ---------------------------------------------------------------------------
 function escapeRegExp(str) {
@@ -274,8 +412,12 @@ app.use(async (req, res) => {
   if (req.headers["accept"]) fwdHeaders["accept"] = req.headers["accept"];
   if (req.headers["content-type"]) fwdHeaders["content-type"] = req.headers["content-type"];
 
-  const bodyB64 =
-    Buffer.isBuffer(req.body) && req.body.length ? req.body.toString("base64") : null;
+  let reqBodyBuf =
+    Buffer.isBuffer(req.body) && req.body.length ? req.body : null;
+  if (reqBodyBuf && req.method === "POST" && VOTE_PATHS.includes(pathLower)) {
+    reqBodyBuf = await injectVoteToken(reqBodyBuf);
+  }
+  const bodyB64 = reqBodyBuf ? reqBodyBuf.toString("base64") : null;
 
   try {
     await init();
@@ -332,7 +474,11 @@ app.use(async (req, res) => {
     }
 
     // ---- Teks: tulis ulang origin -> mirror ----
-    let body = rewriteText(bodyBuf.toString("utf8"), mirrorHost);
+    let srcBuf = bodyBuf;
+    if (BOOTSTRAP_PATHS.includes(pathLower) && contentType.includes("application/json")) {
+      srcBuf = rewriteBootstrap(bodyBuf);
+    }
+    let body = rewriteText(srcBuf.toString("utf8"), mirrorHost);
     if (contentType.includes("text/html")) {
       body = ensureSelfCanonical(body, pathname, mirrorHost);
     }
@@ -354,6 +500,13 @@ app.use(async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Mirror listening on :${PORT} -> ${ORIGIN}`);
   init().catch(() => {});
+  if (SOLVER_ENABLED) {
+    console.log(`[turnstile] solver enabled -> ${SOLVER_URL} (buffer ${TOKEN_BUFFER_TARGET})`);
+    refillTokens().catch(() => {});
+    setInterval(() => refillTokens().catch(() => {}), 15000);
+  } else {
+    console.log("[turnstile] solver disabled (TURNSTILE_SOLVER_ENABLED=0)");
+  }
 });
 
 // ---------------------------------------------------------------------------

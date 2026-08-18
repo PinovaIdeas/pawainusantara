@@ -1,12 +1,17 @@
 # Pawai Nusantara — Mirror Server (Railway / VPS / Render)
-# Node.js + Chromium (Puppeteer) untuk auto-solve Vercel Security Checkpoint.
+# Node.js + Chromium (Puppeteer) untuk lolos Vercel Security Checkpoint,
+# plus Python + nodriver (EzSolver) untuk solve Cloudflare Turnstile.
 
 FROM node:20-bookworm-slim
 
-# Chromium + library yang dibutuhkan headless Chrome.
+# Chromium + Python + Xvfb + library yang dibutuhkan headless Chrome.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       chromium \
       ca-certificates \
+      openssl \
+      python3 \
+      python3-pip \
+      xvfb \
       fonts-liberation \
       fonts-noto-color-emoji \
       libnss3 \
@@ -30,15 +35,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV NODE_ENV=production \
     PUPPETEER_SKIP_DOWNLOAD=true \
     CHROMIUM_PATH=/usr/bin/chromium \
+    CHROME_PATH=/usr/bin/chromium \
+    ORIGIN_HOST=pawainusantara.vercel.app \
+    DISPLAY=:99 \
+    MAX_WORKERS=1 \
     PORT=8080
 
 WORKDIR /app
+
+# Python deps untuk EzSolver (Turnstile solver).
+COPY ezsolver/requirements.txt ./ezsolver/requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages -r ezsolver/requirements.txt
 
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 
 COPY server.js ./
+COPY ezsolver ./ezsolver
+COPY start.sh ./
+RUN chmod +x start.sh
 
 EXPOSE 8080
 
-CMD ["node", "server.js"]
+CMD ["bash", "start.sh"]

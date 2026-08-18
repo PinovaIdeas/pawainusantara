@@ -6,4 +6,7 @@ npm-debug.log
 *.md
 worker.js
 vercel.zip
+EzSolver-main.zip
+__pycache__
+*.pyc
 .env
